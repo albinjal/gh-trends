@@ -168,30 +168,47 @@ Deno.serve(async (req: Request) => {
 
     console.log(`Found ${allRepoUrls.size} unique repos across all sources`);
 
-    // Check which repos already exist in database
-    const repoArray = Array.from(allRepoUrls);
-    const { data: existingRepos, error } = await supabase
-      .from('repos')
-      .select('full_name')
-      .in('full_name', repoArray);
+    // Filter and validate repository names
+    const repoArray = Array.from(allRepoUrls).filter(repo => {
+      const parts = repo.split('/');
+      return parts.length === 2 && parts[0].length > 0 && parts[1].length > 0;
+    });
 
-    if (error) {
-      console.error('Failed to check existing repos:', error);
-      throw new Error(`Database error: ${error.message}`);
+    console.log(`${repoArray.length} valid repo names after filtering`);
+
+    // Check which repos already exist in database (in batches to avoid query limits)
+    const existingRepoNames = new Set<string>();
+    const batchSize = 100; // Supabase-safe batch size
+
+    console.log(`Checking ${repoArray.length} repos in batches of ${batchSize}...`);
+
+    for (let i = 0; i < repoArray.length; i += batchSize) {
+      const batch = repoArray.slice(i, i + batchSize);
+
+      const { data: existingRepos, error } = await supabase
+        .from('repos')
+        .select('full_name')
+        .in('full_name', batch);
+
+      if (error) {
+        console.error(`Failed to check existing repos (batch ${Math.floor(i/batchSize) + 1}):`, error);
+        throw new Error(`Database error: ${error.message}`);
+      }
+
+      existingRepos?.forEach(row => existingRepoNames.add(row.full_name));
     }
 
-    const existingRepoNames = new Set(existingRepos?.map(row => row.full_name) || []);
     const newRepoUrls = repoArray.filter(repoUrl => !existingRepoNames.has(repoUrl));
     const skippedCount = repoArray.length - newRepoUrls.length;
 
     console.log(`${newRepoUrls.length} new repos to add as stubs, ${skippedCount} already exist`);
 
-    // Insert new repo stubs
+        // Insert new repo stubs (in batches to avoid insertion limits)
     let insertedCount = 0;
     let errorCount = 0;
 
     if (newRepoUrls.length > 0) {
-              const stubs = newRepoUrls.map(fullName => {
+      const stubs = newRepoUrls.map(fullName => {
         const [owner, name] = fullName.split('/');
         return {
           full_name: fullName,
@@ -202,17 +219,26 @@ Deno.serve(async (req: Request) => {
         };
       });
 
-      const { error: insertError } = await supabase
-        .from('repos')
-        .insert(stubs);
+      console.log(`Inserting ${stubs.length} new repo stubs in batches of ${batchSize}...`);
 
-      if (insertError) {
-        console.error('Failed to insert stubs:', insertError);
-        errorCount = stubs.length;
-      } else {
-        insertedCount = stubs.length;
-        console.log(`Successfully inserted ${insertedCount} repo stubs`);
+      // Insert in batches
+      for (let i = 0; i < stubs.length; i += batchSize) {
+        const batch = stubs.slice(i, i + batchSize);
+
+        const { error: insertError } = await supabase
+          .from('repos')
+          .insert(batch);
+
+        if (insertError) {
+          console.error(`Failed to insert stubs (batch ${Math.floor(i/batchSize) + 1}):`, insertError);
+          errorCount += batch.length;
+        } else {
+          insertedCount += batch.length;
+          console.log(`Successfully inserted batch ${Math.floor(i/batchSize) + 1} (${batch.length} repos)`);
+        }
       }
+
+      console.log(`Insertion complete: ${insertedCount} total stubs inserted, ${errorCount} errors`);
     }
 
     console.log(`Discovery complete: ${insertedCount} stubs inserted, ${errorCount} errors`);
