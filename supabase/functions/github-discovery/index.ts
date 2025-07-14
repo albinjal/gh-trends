@@ -3,31 +3,31 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 /**
  * Extract GitHub repository URLs from HTML content
  */
-function extractGitHubRepoUrls(html: string): string[] {
-  // Pattern for full github.com URLs
-  const fullUrlPattern = /github\.com\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
-
-  // Pattern for relative GitHub URLs (since we're on github.com already)
-  const relativeUrlPattern = /href=["']\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
-
-  // Additional specific patterns for trending pages
-  const trendingLinkPattern = /<a[^>]*href=["']\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
-  const exploreRepoPattern = /data-hovercard-url="\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
-
+function extractGitHubRepoUrls(html: string, currentUrl: string): string[] {
   const repos = new Set<string>();
+  const isGitHubPage = currentUrl.includes('github.com');
 
-  // Extract from all patterns
-  const patterns = [fullUrlPattern, relativeUrlPattern, trendingLinkPattern, exploreRepoPattern];
-
-  patterns.forEach(pattern => {
-    const matches = [...html.matchAll(pattern)];
+  if (isGitHubPage) {
+    // On GitHub: look for relative paths starting with /
+    const relativePattern = /href=["']\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+    const matches = [...html.matchAll(relativePattern)];
     matches.forEach(match => {
       const fullName = match[1];
       if (isValidRepoName(fullName)) {
         repos.add(fullName);
       }
     });
-  });
+  } else {
+    // On other sites: look for absolute GitHub URLs
+    const absolutePattern = /github\.com\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+    const matches = [...html.matchAll(absolutePattern)];
+    matches.forEach(match => {
+      const fullName = match[1];
+      if (isValidRepoName(fullName)) {
+        repos.add(fullName);
+      }
+    });
+  }
 
   return Array.from(repos);
 }
@@ -52,7 +52,9 @@ function isValidRepoName(fullName: string): boolean {
     '/enterprise', '/team', '/contact', '/help', '/docs', '/blog',
     '/explore', '/trending', '/collections', '/topics', '/marketplace',
     '/sponsors', '/advisories', '/pulls', '/issues', '/actions',
-    '/projects', '/wiki', '/releases', '/tags', '/branches', '/commits'
+    '/projects', '/wiki', '/releases', '/tags', '/branches', '/commits',
+    '/discussions', '/new', '/compare', '/blame', '/tree', '/blob',
+    '/raw', '/commit', '/pull', '/issue'
   ];
 
   const fullPath = `/${fullName}`;
@@ -71,7 +73,7 @@ function isValidRepoName(fullName: string): boolean {
 /**
  * Scrape a single page for GitHub repository URLs
  */
-async function scrapePage(url: string, context: Record<string, any>): Promise<{ repos: string[], context: Record<string, any> }> {
+async function scrapePage(url: string): Promise<string[]> {
   console.log(`Scraping: ${url}`);
 
   try {
@@ -98,19 +100,20 @@ async function scrapePage(url: string, context: Record<string, any>): Promise<{ 
       console.log('Trending repo patterns found:', [...html.matchAll(trendingRepoPattern)].length);
     }
 
-    const repos = extractGitHubRepoUrls(html);
+    const repos = extractGitHubRepoUrls(html, url);
 
     console.log(`Found ${repos.length} repos on ${url}: ${repos.slice(0, 5).join(', ')}${repos.length > 5 ? '...' : ''}`);
-    return { repos, context };
+    return repos;
 
   } catch (error) {
     console.error(`Failed to scrape ${url}:`, error);
-    return { repos: [], context };
+    return [];
   }
 }
 
 /**
  * Main discovery function - API-free scraping that creates repo stubs
+ * Fetches scrape targets from database for flexible configuration
  */
 Deno.serve(async (req: Request) => {
   try {
@@ -125,28 +128,42 @@ Deno.serve(async (req: Request) => {
     const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const scrapeTargets = [
-      { url: 'https://github.com/trending', context: { source: 'trending', period: 'daily' } },
-      { url: 'https://github.com/trending?since=weekly', context: { source: 'trending', period: 'weekly' } },
-      { url: 'https://github.com/trending?since=monthly', context: { source: 'trending', period: 'monthly' } },
-      { url: 'https://github.com/explore', context: { source: 'explore' } },
-    ];
+    // Fetch active scrape targets from database
+    const { data: scrapeTargets, error: scrapeTargetsError } = await supabase
+      .from('scrape_targets')
+      .select('url, name')
+      .eq('is_active', true);
 
-    console.log('Starting GitHub discovery...');
+    if (scrapeTargetsError) {
+      console.error('Failed to fetch scrape targets:', scrapeTargetsError);
+      throw new Error(`Database error: ${scrapeTargetsError.message}`);
+    }
+
+    if (!scrapeTargets || scrapeTargets.length === 0) {
+      console.log('No active scrape targets found');
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'No active scrape targets configured',
+        timestamp: new Date().toISOString(),
+        stats: { pages_scraped: 0, unique_repos_found: 0, new_stubs_added: 0 }
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log(`Starting GitHub discovery with ${scrapeTargets.length} targets...`);
 
     // Scrape all target pages
     const allRepoUrls = new Set<string>();
-    const repoContexts = new Map<string, Record<string, any>>();
 
     for (const target of scrapeTargets) {
-      const result = await scrapePage(target.url, target.context);
+      const repos = await scrapePage(target.url);
 
-      result.repos.forEach(repoUrl => {
+      repos.forEach(repoUrl => {
         allRepoUrls.add(repoUrl);
-        repoContexts.set(repoUrl, result.context);
       });
 
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 20));
     }
 
     console.log(`Found ${allRepoUrls.size} unique repos across all sources`);
@@ -174,14 +191,14 @@ Deno.serve(async (req: Request) => {
     let errorCount = 0;
 
     if (newRepoUrls.length > 0) {
-      const stubs = newRepoUrls.map(fullName => {
+              const stubs = newRepoUrls.map(fullName => {
         const [owner, name] = fullName.split('/');
         return {
           full_name: fullName,
           owner: owner,
           name: name,
           discovered_at: new Date().toISOString(),
-          discovery_context: repoContexts.get(fullName) || {}
+          discovery_context: { source: 'web_scraping' }
         };
       });
 
