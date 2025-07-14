@@ -74,5 +74,5 @@ This project follows specific coding guidelines located in `.cursor/rules/`. Whe
   - Always specify schema in queries
 - [`writing-supabase-edge-functions.mdc`](.cursor/rules/writing-supabase-edge-functions.mdc): Coding rules for Supabase Edge Functions
   - Use Web APIs and Deno core APIs over external dependencies
-  - Use `npm:` or `jsr:` specifiers with versions for imports
+      - Use `npm:` or `jsr:` specifiers with versions for imports
   - Use `Deno.serve()` instead of deprecated serve imports

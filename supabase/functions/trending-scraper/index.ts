@@ -22,26 +22,39 @@ interface DiscoveryResult {
 function parseTrendingRepos(html: string): TrendingRepo[] {
   const repos: TrendingRepo[] = [];
   
-  // Extract repo items using regex patterns (simplified scraping)
+  // Extract repo items using updated regex patterns for new GitHub structure
   const repoPattern = /<article[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)<\/article>/gs;
   const repoMatches = html.match(repoPattern) || [];
   
+  console.log(`Found ${repoMatches.length} repository articles`);
+  
   repoMatches.forEach((repoHtml, index) => {
     try {
-      // Extract repo full name
-      const nameMatch = repoHtml.match(/href="\/([^"]+)"[^>]*>\s*<h2[^>]*>\s*<svg[^>]*>[^<]*<\/svg>\s*([^<]+)/s);
-      if (!nameMatch) return;
+      // Extract repo full name from href within h2 section
+      // Pattern: href="/owner/repo" inside h2 > a tag
+      const nameMatch = repoHtml.match(/href="\/([^/]+\/[^"]+)"[^>]*class="Link"/s);
+      if (!nameMatch) {
+        console.warn(`No repo link found in article ${index}`);
+        return;
+      }
       
       const full_name = nameMatch[1].trim();
       const [owner, name] = full_name.split('/');
       
-      // Extract language
+      if (!owner || !name) {
+        console.warn(`Invalid repo name format: ${full_name}`);
+        return;
+      }
+      
+      // Extract language from itemprop="programmingLanguage"
       const langMatch = repoHtml.match(/<span[^>]*itemprop="programmingLanguage"[^>]*>([^<]+)<\/span>/);
       const language = langMatch ? langMatch[1].trim() : null;
       
-      // Extract description
-      const descMatch = repoHtml.match(/<p[^>]*class="[^"]*col-9[^"]*"[^>]*>\s*([^<]+)/);
+      // Extract description from p tag with col-9 class
+      const descMatch = repoHtml.match(/<p[^>]*class="[^"]*col-9[^"]*color-fg-muted[^"]*"[^>]*>\s*([^<]+)/s);
       const description = descMatch ? descMatch[1].trim() : null;
+      
+      console.log(`Parsed repo ${index + 1}: ${full_name} (${language || 'unknown'})`);
       
       repos.push({
         full_name,
@@ -57,6 +70,7 @@ function parseTrendingRepos(html: string): TrendingRepo[] {
     }
   });
   
+  console.log(`Successfully parsed ${repos.length} repositories`);
   return repos;
 }
 
