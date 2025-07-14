@@ -18,27 +18,71 @@ GitHub Trends Discovery System - A modular system for discovering and tracking t
 
 ### Edge Function Deployment
 ```bash
-supabase functions deploy trending-scraper --project-ref ktpdhiudpwckpyqmeitc
+supabase functions deploy github-discovery --project-ref ktpdhiudpwckpyqmeitc
 supabase functions deploy snapshot-collector --project-ref ktpdhiudpwckpyqmeitc
-supabase functions deploy repo-lifecycle --project-ref ktpdhiudpwckpyqmeitc
+```
+
+### API Usage Coordination & Scheduling
+
+**Optimized API Efficiency:**
+- **Discovery Function**: Only calls API for NEW repos (skips existing ones)
+- **Snapshot Collector**: Smart priority system based on repo popularity
+- **No Hard Limits**: Uses full rate limit intelligently with buffer
+
+**Recommended Schedule:**
+- **Discovery**: Once daily (finds new trending repos)
+- **Snapshots**: Every hour (processes repos by priority)
+
+**Priority-Based Snapshot Updates:**
+- **Immediate**: New repos (discovered <48h ago)
+- **Daily**: Popular repos (1000+ stars) 
+- **Every 2 days**: Medium repos (100+ stars)
+- **Every 3 days**: Small repos (10+ stars)
+- **Weekly**: Very small repos (<10 stars)
+
+**Estimated API Usage:**
+- **Discovery**: ~50-200 calls/day (only new repos)
+- **Snapshots**: ~200-500 calls/hour (priority-based)
+- **Total**: Well under 5,000/hour limit
+
+### Automated Scheduling Setup
+
+**Using Supabase Cron (pg_cron):**
+```sql
+-- Daily discovery at 2 AM UTC
+SELECT cron.schedule('github-discovery', '0 2 * * *', 'SELECT invoke_edge_function(''github-discovery'')');
+
+-- Hourly snapshots (every hour at minute 15)
+SELECT cron.schedule('snapshot-collector', '15 * * * *', 'SELECT invoke_edge_function(''snapshot-collector'')');
+```
+
+**Alternative: External Cron (GitHub Actions, etc.):**
+```bash
+# Daily discovery
+curl -X POST "https://ktpdhiudpwckpyqmeitc.supabase.co/functions/v1/github-discovery" \
+  -H "Authorization: Bearer $SUPABASE_ANON_KEY"
+
+# Hourly snapshots  
+curl -X POST "https://ktpdhiudpwckpyqmeitc.supabase.co/functions/v1/snapshot-collector" \
+  -H "Authorization: Bearer $SUPABASE_ANON_KEY"
 ```
 
 ## Architecture Notes
 
-**Modular Design:**
-- Separate functions for discovery, data collection, and lifecycle management
-- Independent scheduling and rate limiting per module
-- Database-first approach with comprehensive data capture
+**Simplified Design:**
+- Single discovery function that scrapes pages and fetches GitHub API data
+- GitHub ID-based storage for durable repository identification
+- Clean separation of discovery and querying
 
 **Rate Limiting Strategy:**
 - GitHub API: 5,000 req/hour with PAT
-- Intelligent batching and throttling
-- Circuit breaker patterns for API protection
+- Conservative limits with ~100 API calls per discovery run
+- Efficient deduplication to avoid redundant API calls
 
-**Lifecycle Management:**
-- Auto-deactivate repos after 7+ days of low growth
-- Reactivate if repos trend again within 3 days
-- Prevents unbounded tracking growth
+**Data Model:**
+- Primary key: GitHub repository ID (immutable)
+- Rich metadata from GitHub API for powerful querying
+- Optional discovery context for analytics
 
 ## Configuration
 
@@ -70,3 +114,4 @@ This project follows specific coding guidelines located in `.cursor/rules/`. Whe
   - Use Web APIs and Deno core APIs over external dependencies
       - Use `npm:` or `jsr:` specifiers with versions for imports
   - Use `Deno.serve()` instead of deprecated serve imports
+  - Prefer testing functions locally for cost savings
