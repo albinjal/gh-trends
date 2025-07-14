@@ -107,6 +107,20 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // Log fetch status distribution for monitoring
+    const { data: statusStats } = await supabase
+      .from('repos')
+      .select('fetch_status')
+      .not('fetch_status', 'is', null);
+
+    if (statusStats) {
+      const statusCounts = statusStats.reduce((acc, repo) => {
+        acc[repo.fetch_status] = (acc[repo.fetch_status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      console.log('Repository fetch status distribution:', statusCounts);
+    }
+
     const snapshots: SnapshotData[] = [];
     let apiCallsUsed = 0;
     let processedRepos = 0;
@@ -122,7 +136,8 @@ Deno.serve(async (req: Request) => {
     const statsResults = await fetchReposBatched<FullRepoData>(
       reposToProcess.map(r => r.full_name),
       githubToken,
-      'databaseId name owner { login } description homepageUrl primaryLanguage { name } repositoryTopics(first: 100) { nodes { topic { name } } } stargazerCount forkCount watchers { totalCount } issues(states: OPEN) { totalCount } diskUsage isFork isArchived isDisabled licenseInfo { name } defaultBranchRef { name } createdAt updatedAt pushedAt'
+      'databaseId name owner { login } description homepageUrl primaryLanguage { name } repositoryTopics(first: 100) { nodes { topic { name } } } stargazerCount forkCount watchers { totalCount } issues(states: OPEN) { totalCount } diskUsage isFork isArchived isDisabled licenseInfo { name } defaultBranchRef { name } createdAt updatedAt pushedAt',
+      supabase  // Pass Supabase client for fetch status tracking
     );
     apiCallsUsed = Math.ceil(reposToProcess.length / 100);
 
@@ -135,7 +150,7 @@ Deno.serve(async (req: Request) => {
         const repo = reposToProcess[index];
         const isNew = !repo.github_id || repo.hours_since_last_snapshot > 9999;
 
-        // Update repo with complete data if it's a stub
+        // Update repo with metadata only (metrics go to snapshots table)
         if (isNew) {
           const upsertPromise = supabase.from('repos').upsert({
             github_id: data.databaseId,
@@ -146,11 +161,6 @@ Deno.serve(async (req: Request) => {
             homepage: data.homepageUrl,
             language: data.primaryLanguage?.name || null,
             topics: data.repositoryTopics.nodes.map(n => n.topic.name),
-            stars: data.stargazerCount,
-            forks: data.forkCount,
-            watchers: data.watchers.totalCount,
-            open_issues: data.issues.totalCount,
-            size: data.diskUsage,
             is_fork: data.isFork,
             is_archived: data.isArchived,
             is_disabled: data.isDisabled,
@@ -187,7 +197,11 @@ Deno.serve(async (req: Request) => {
     // Store snapshots in database
     const storeResult = await storeSnapshots(supabase, snapshots);
 
+    const successfulRepos = statsResults.filter(r => r !== null).length;
+    const failedRepos = processedRepos - successfulRepos;
+
     console.log(`Snapshot collection complete: ${storeResult.inserted} inserted, ${storeResult.errors} errors`);
+    console.log(`Repository processing: ${successfulRepos} successful, ${failedRepos} failed out of ${processedRepos} total`);
 
     return new Response(JSON.stringify({
       success: true,

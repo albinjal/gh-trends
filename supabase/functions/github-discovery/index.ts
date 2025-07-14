@@ -91,11 +91,6 @@ async function scrapePage(url: string): Promise<string[]> {
     const html = await response.text();
 
 
-    // Look for specific patterns in trending pages
-    if (url.includes('trending')) {
-      const trendingRepoPattern = /<h2[^>]*class="[^"]*h3[^"]*"[^>]*>[\s\S]*?<a[^>]*href="\/([^"]+)"[^>]*>/g;
-    }
-
     const repos = extractGitHubRepoUrls(html, url);
 
     console.log(`Found ${repos.length} repos on ${url}: ${repos.slice(0, 5).join(', ')}${repos.length > 5 ? '...' : ''}`);
