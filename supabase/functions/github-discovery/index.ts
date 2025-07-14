@@ -4,26 +4,68 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
  * Extract GitHub repository URLs from HTML content
  */
 function extractGitHubRepoUrls(html: string): string[] {
-  const repoPattern = /github\.com\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
-  const matches = [...html.matchAll(repoPattern)];
+  // Pattern for full github.com URLs
+  const fullUrlPattern = /github\.com\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+
+  // Pattern for relative GitHub URLs (since we're on github.com already)
+  const relativeUrlPattern = /href=["']\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+
+  // Additional specific patterns for trending pages
+  const trendingLinkPattern = /<a[^>]*href=["']\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+  const exploreRepoPattern = /data-hovercard-url="\/([a-zA-Z0-9][-a-zA-Z0-9]*\/[a-zA-Z0-9][-a-zA-Z0-9._]*)/g;
+
   const repos = new Set<string>();
 
-  matches.forEach(match => {
-    const fullName = match[1];
-    const parts = fullName.split('/');
+  // Extract from all patterns
+  const patterns = [fullUrlPattern, relativeUrlPattern, trendingLinkPattern, exploreRepoPattern];
 
-    if (parts.length === 2 &&
-        parts[0].length > 0 &&
-        parts[1].length > 0 &&
-        !fullName.includes('/settings') &&
-        !fullName.includes('/orgs') &&
-        !fullName.includes('/users') &&
-        !fullName.includes('.')) {
-      repos.add(fullName);
-    }
+  patterns.forEach(pattern => {
+    const matches = [...html.matchAll(pattern)];
+    matches.forEach(match => {
+      const fullName = match[1];
+      if (isValidRepoName(fullName)) {
+        repos.add(fullName);
+      }
+    });
   });
 
   return Array.from(repos);
+}
+
+/**
+ * Validate if a repo name looks legitimate
+ */
+function isValidRepoName(fullName: string): boolean {
+  const parts = fullName.split('/');
+
+  if (parts.length !== 2) return false;
+
+  const [owner, repo] = parts;
+
+  // Basic validation
+  if (owner.length === 0 || repo.length === 0) return false;
+
+  // Exclude common non-repo paths
+  const excludePatterns = [
+    '/settings', '/orgs', '/users', '/search', '/login', '/signup',
+    '/notifications', '/security', '/about', '/pricing', '/features',
+    '/enterprise', '/team', '/contact', '/help', '/docs', '/blog',
+    '/explore', '/trending', '/collections', '/topics', '/marketplace',
+    '/sponsors', '/advisories', '/pulls', '/issues', '/actions',
+    '/projects', '/wiki', '/releases', '/tags', '/branches', '/commits'
+  ];
+
+  const fullPath = `/${fullName}`;
+  if (excludePatterns.some(pattern => fullPath.includes(pattern))) {
+    return false;
+  }
+
+  // Exclude if contains dots (likely file extensions or subdomains)
+  if (fullName.includes('.') && !repo.endsWith('.git')) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -45,9 +87,20 @@ async function scrapePage(url: string, context: Record<string, any>): Promise<{ 
     }
 
     const html = await response.text();
+
+    // Log a sample of the HTML to debug
+    console.log(`HTML sample from ${url}:`);
+    console.log('First 1000 chars:', html.substring(0, 1000));
+
+    // Look for specific patterns in trending pages
+    if (url.includes('trending')) {
+      const trendingRepoPattern = /<h2[^>]*class="[^"]*h3[^"]*"[^>]*>[\s\S]*?<a[^>]*href="\/([^"]+)"[^>]*>/g;
+      console.log('Trending repo patterns found:', [...html.matchAll(trendingRepoPattern)].length);
+    }
+
     const repos = extractGitHubRepoUrls(html);
 
-    console.log(`Found ${repos.length} repos on ${url}`);
+    console.log(`Found ${repos.length} repos on ${url}: ${repos.slice(0, 5).join(', ')}${repos.length > 5 ? '...' : ''}`);
     return { repos, context };
 
   } catch (error) {
@@ -121,11 +174,16 @@ Deno.serve(async (req: Request) => {
     let errorCount = 0;
 
     if (newRepoUrls.length > 0) {
-      const stubs = newRepoUrls.map(url => ({
-        full_name: url,
-        discovered_at: new Date().toISOString(),
-        discovery_context: repoContexts.get(url) || {}
-      }));
+      const stubs = newRepoUrls.map(fullName => {
+        const [owner, name] = fullName.split('/');
+        return {
+          full_name: fullName,
+          owner: owner,
+          name: name,
+          discovered_at: new Date().toISOString(),
+          discovery_context: repoContexts.get(fullName) || {}
+        };
+      });
 
       const { error: insertError } = await supabase
         .from('repos')

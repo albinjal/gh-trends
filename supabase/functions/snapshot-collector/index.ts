@@ -159,8 +159,8 @@ Deno.serve(async (req: Request) => {
             github_created_at: data.createdAt,
             github_updated_at: data.updatedAt,
             github_pushed_at: data.pushedAt
-          }, { onConflict: 'github_id' }).then(({ error }) => {
-            if (error) console.error('Upsert failed for', data.databaseId, ':', error);
+          }, { onConflict: 'full_name' }).then(({ error }) => {
+            if (error) console.error('Upsert failed for', `${data.owner.login}/${data.name}`, ':', error);
           });
 
           upsertPromises.push(upsertPromise);
@@ -168,7 +168,7 @@ Deno.serve(async (req: Request) => {
 
         // Create snapshot
         snapshots.push({
-          github_id: data.databaseId || repo.github_id,
+          github_id: data.databaseId,
           stars: data.stargazerCount,
           forks: data.forkCount,
           watchers: data.watchers.totalCount,
