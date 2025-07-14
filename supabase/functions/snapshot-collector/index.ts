@@ -47,20 +47,20 @@ async function fetchReposBatch(
 ): Promise<{ repos: GitHubRepo[]; errors: string[] }> {
   const repos: GitHubRepo[] = [];
   const errors: string[] = [];
-  
+
   const headers: Record<string, string> = {
     'Accept': 'application/vnd.github.v3+json',
     'User-Agent': 'GitHubTrendsBot/1.0',
   };
-  
+
   if (githubToken) {
     headers['Authorization'] = `Bearer ${githubToken}`;
   }
-  
+
   // GitHub API doesn't support batch repo fetching, so we need individual requests
   // But we can parallelize with rate limiting
   const batchSize = 10; // Parallel requests
-  
+
   for (let i = 0; i < repoNames.length; i += batchSize) {
     const batch = repoNames.slice(i, i + batchSize);
     const promises = batch.map(async (repoName) => {
@@ -68,30 +68,30 @@ async function fetchReposBatch(
         const response = await fetch(`https://api.github.com/repos/${repoName}`, {
           headers
         });
-        
+
         if (response.status === 403) {
           const rateLimitReset = response.headers.get('x-ratelimit-reset');
           throw new Error(`Rate limited. Resets at: ${rateLimitReset}`);
         }
-        
+
         if (response.status === 404) {
           throw new Error(`Repository not found: ${repoName}`);
         }
-        
+
         if (!response.ok) {
           throw new Error(`GitHub API error: ${response.status}`);
         }
-        
+
         const repo: GitHubRepo = await response.json();
         return { repo, error: null };
-        
+
       } catch (error) {
         return { repo: null, error: `${repoName}: ${error.message}` };
       }
     });
-    
+
     const results = await Promise.all(promises);
-    
+
     for (const result of results) {
       if (result.repo) {
         repos.push(result.repo);
@@ -99,13 +99,13 @@ async function fetchReposBatch(
         errors.push(result.error);
       }
     }
-    
+
     // Rate limiting: delay between batches
     if (i + batchSize < repoNames.length) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
-  
+
   return { repos, errors };
 }
 
@@ -120,7 +120,7 @@ async function updateRepoAndCreateSnapshot(
 ): Promise<void> {
   const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
   const supabase = createClient(supabaseUrl, supabaseKey);
-  
+
   // Update repo metadata
   const { error: updateError } = await supabase
     .from('repos')
@@ -134,11 +134,11 @@ async function updateRepoAndCreateSnapshot(
       last_snapshot: new Date().toISOString()
     })
     .eq('id', dbRepoId);
-  
+
   if (updateError) {
     throw new Error(`Failed to update repo metadata: ${updateError.message}`);
   }
-  
+
   // Create snapshot
   const { error: snapshotError } = await supabase
     .from('snapshots')
@@ -151,7 +151,7 @@ async function updateRepoAndCreateSnapshot(
       subscribers: githubRepo.subscribers_count,
       size: githubRepo.size
     });
-  
+
   if (snapshotError) {
     throw new Error(`Failed to create snapshot: ${snapshotError.message}`);
   }
@@ -167,18 +167,18 @@ async function getActiveRepos(
 ): Promise<{ id: number; full_name: string }[]> {
   const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
   const supabase = createClient(supabaseUrl, supabaseKey);
-  
+
   const { data, error } = await supabase
     .from('repos')
     .select('id, full_name')
     .eq('is_active', true)
     .order('last_snapshot', { ascending: true, nullsFirst: true })
     .limit(limit);
-  
+
   if (error) {
     throw new Error(`Failed to fetch active repos: ${error.message}`);
   }
-  
+
   return data || [];
 }
 
@@ -194,17 +194,17 @@ async function checkRateLimit(githubToken?: string): Promise<{
     'Accept': 'application/vnd.github.v3+json',
     'User-Agent': 'GitHubTrendsBot/1.0',
   };
-  
+
   if (githubToken) {
     headers['Authorization'] = `Bearer ${githubToken}`;
   }
-  
+
   const response = await fetch('https://api.github.com/rate_limit', { headers });
-  
+
   if (!response.ok) {
     throw new Error(`Rate limit check failed: ${response.status}`);
   }
-  
+
   const data = await response.json();
   return {
     remaining: data.rate.remaining,
@@ -219,11 +219,11 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     const githubToken = Deno.env.get('GITHUB_TOKEN'); // Optional but recommended
-    
+
     if (!supabaseUrl || !supabaseKey) {
       throw new Error('Missing Supabase configuration');
     }
-    
+
     // Parse request parameters
     const url = new URL(req.url);
     const batchSize = Math.min(
@@ -231,22 +231,22 @@ Deno.serve(async (req: Request) => {
       200 // Maximum batch size
     );
     const minRateLimit = parseInt(url.searchParams.get('min_rate_limit') || '100');
-    
+
     console.log(`Starting snapshot collection (batch_size: ${batchSize})`);
-    
+
     // Check rate limit before starting
     const rateLimit = await checkRateLimit(githubToken);
     console.log(`GitHub API rate limit: ${rateLimit.remaining}/${rateLimit.limit}`);
-    
+
     if (rateLimit.remaining < minRateLimit) {
       const resetTime = new Date(rateLimit.reset * 1000);
       throw new Error(`Rate limit too low (${rateLimit.remaining}). Resets at: ${resetTime.toISOString()}`);
     }
-    
+
     // Get active repositories
     const activeRepos = await getActiveRepos(supabaseUrl, supabaseKey, batchSize);
     console.log(`Found ${activeRepos.length} active repos to snapshot`);
-    
+
     if (activeRepos.length === 0) {
       return new Response(JSON.stringify({
         success: true,
@@ -256,13 +256,13 @@ Deno.serve(async (req: Request) => {
         headers: { 'Content-Type': 'application/json' }
       });
     }
-    
+
     // Fetch repo data from GitHub
     const repoNames = activeRepos.map(r => r.full_name);
     const { repos: githubRepos, errors } = await fetchReposBatch(repoNames, githubToken);
-    
+
     console.log(`Fetched ${githubRepos.length} repos from GitHub API`);
-    
+
     // Process each repo
     const results: BatchResult = {
       success: 0,
@@ -270,27 +270,27 @@ Deno.serve(async (req: Request) => {
       rate_limited: false,
       errors: [...errors]
     };
-    
+
     for (const githubRepo of githubRepos) {
       try {
         const dbRepo = activeRepos.find(r => r.full_name === githubRepo.full_name);
         if (!dbRepo) {
           throw new Error(`Database repo not found for ${githubRepo.full_name}`);
         }
-        
+
         await updateRepoAndCreateSnapshot(supabaseUrl, supabaseKey, dbRepo.id, githubRepo);
         results.success++;
-        
+
       } catch (error) {
         console.error(`Failed to process ${githubRepo.full_name}:`, error);
         results.failed++;
         results.errors.push(`${githubRepo.full_name}: ${error.message}`);
       }
     }
-    
+
     // Check final rate limit
     const finalRateLimit = await checkRateLimit(githubToken);
-    
+
     return new Response(JSON.stringify({
       success: true,
       timestamp: new Date().toISOString(),
@@ -307,10 +307,10 @@ Deno.serve(async (req: Request) => {
         'Connection': 'keep-alive'
       }
     });
-    
+
   } catch (error) {
     console.error('Snapshot collector error:', error);
-    
+
     return new Response(JSON.stringify({
       success: false,
       error: error.message,

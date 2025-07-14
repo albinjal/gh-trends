@@ -14,13 +14,7 @@ GitHub Trends Discovery System - A modular system for discovering and tracking t
 
 ## Development Commands
 
-### Database Setup
-```bash
-# Apply migrations in order:
-# 1. migrations/001_create_core_schema.sql
-# 2. migrations/002_add_indexes.sql
-# 3. migrations/003_repo_growth_function.sql
-```
+
 
 ### Edge Function Deployment
 ```bash
